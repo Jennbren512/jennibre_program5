@@ -20,7 +20,7 @@ int read_file(const char *filename, char *buffer) {
     fgets(buffer, BUFFER_SIZE, fp);
     fclose(fp);
     size_t len = strlen(buffer);
-    if (len > 0 && buffer[len - 1] == '\n') buffer[len - 1] = '\0';
+    if (len > 0 && buffer[len - 1] == '\n') buffer[len - 1] = '\0'; // strip newline
     return 0;
 }
 
