@@ -2,50 +2,28 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <fcntl.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <sys/types.h>
-#include <sys/stat.h>
+#include <signal.h>
 
-#define MAX_BUFFER 100000
+#define BUFFER_SIZE 100000
 
 void error(const char *msg) {
     fprintf(stderr, "%s\n", msg);
     exit(1);
 }
 
-// Read file into buffer, remove trailing newline
-int read_file(const char *filename, char *buffer) {
-    FILE *fp = fopen(filename, "r");
-    if (!fp) return -1;
-    fgets(buffer, MAX_BUFFER, fp);
-    fclose(fp);
-    size_t len = strlen(buffer);
-    if (buffer[len - 1] == '\n') buffer[len - 1] = '\0';
-    return 0;
-}
-
-// Validate text only contains A-Z and space
-int validate_text(const char *text) {
-    for (int i = 0; text[i] != '\0'; i++) {
-        if ((text[i] < 'A' || text[i] > 'Z') && text[i] != ' ') {
-            return 0;
-        }
+// Decrypt function using OTP
+void decrypt(const char *ciphertext, const char *key, char *plaintext) {
+    int i;
+    for (i = 0; ciphertext[i] != '\0'; i++) {
+        int c = (ciphertext[i] == ' ') ? 26 : ciphertext[i] - 'A';
+        int k = (key[i] == ' ') ? 26 : key[i] - 'A';
+        int p = (c - k + 27) % 27;
+        plaintext[i] = (p == 26) ? ' ' : 'A' + p;
     }
-    return 1;
-}
-
-// Write exactly n bytes
-int write_all(int socketFD, char *buffer, int n) {
-    int total = 0, bytesWritten;
-    while (total < n) {
-        bytesWritten = send(socketFD, buffer + total, n - total, 0);
-        if (bytesWritten <= 0) return -1;
-        total += bytesWritten;
-    }
-    return total;
+    plaintext[i] = '\0';
 }
 
 // Read exactly n bytes
@@ -59,72 +37,105 @@ int read_all(int socketFD, char *buffer, int n) {
     return total;
 }
 
+// Write exactly n bytes
+int write_all(int socketFD, char *buffer, int n) {
+    int total = 0, bytesWritten;
+    while (total < n) {
+        bytesWritten = send(socketFD, buffer + total, n - total, 0);
+        if (bytesWritten <= 0) return -1;
+        total += bytesWritten;
+    }
+    return total;
+}
+
+void handle_connection(int connectionFD) {
+    char handshake[16];
+    memset(handshake, 0, sizeof(handshake));
+    recv(connectionFD, handshake, sizeof(handshake) - 1, 0);
+
+    if (strcmp(handshake, "DEC_CLIENT") != 0) {
+        send(connectionFD, "REJECT", 6, 0);
+        close(connectionFD);
+        exit(1);
+    } else {
+        send(connectionFD, "DEC_SERVER", 10, 0);
+    }
+
+    // Get sizes first
+    int textSize;
+    recv(connectionFD, &textSize, sizeof(int), 0);
+
+    char *ciphertext = malloc(textSize + 1);
+    char *key = malloc(textSize + 1);
+    char *plaintext = malloc(textSize + 1);
+    memset(ciphertext, 0, textSize + 1);
+    memset(key, 0, textSize + 1);
+    memset(plaintext, 0, textSize + 1);
+
+    if (read_all(connectionFD, ciphertext, textSize) < 0 ||
+        read_all(connectionFD, key, textSize) < 0) {
+        fprintf(stderr, "Error reading ciphertext/key\n");
+        close(connectionFD);
+        exit(1);
+    }
+
+    decrypt(ciphertext, key, plaintext);
+
+    write_all(connectionFD, plaintext, textSize);
+
+    free(ciphertext);
+    free(key);
+    free(plaintext);
+    close(connectionFD);
+    exit(0);
+}
+
 int main(int argc, char *argv[]) {
-    if (argc < 4) {
-        fprintf(stderr, "USAGE: %s ciphertext key port\n", argv[0]);
+    if (argc < 2) {
+        fprintf(stderr, "USAGE: %s port\n", argv[0]);
         exit(1);
     }
 
-    char ciphertext[MAX_BUFFER];
-    char key[MAX_BUFFER];
-    char plaintext[MAX_BUFFER];
-    memset(ciphertext, '\0', sizeof(ciphertext));
-    memset(key, '\0', sizeof(key));
-    memset(plaintext, '\0', sizeof(plaintext));
+    int listenSocketFD, connectionFD;
+    socklen_t sizeOfClientInfo;
+    struct sockaddr_in serverAddress, clientAddress;
 
-    if (read_file(argv[1], ciphertext) < 0 || read_file(argv[2], key) < 0) {
-        fprintf(stderr, "Error reading files\n");
-        exit(1);
-    }
+    listenSocketFD = socket(AF_INET, SOCK_STREAM, 0);
+    if (listenSocketFD < 0) error("ERROR opening socket");
 
-    if (!validate_text(ciphertext) || !validate_text(key)) {
-        fprintf(stderr, "dec_client error: input contains bad characters\n");
-        exit(1);
-    }
+    int yes = 1;
+    setsockopt(listenSocketFD, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int));
 
-    if (strlen(key) < strlen(ciphertext)) {
-        fprintf(stderr, "Error: key '%s' is too short\n", argv[2]);
-        exit(1);
-    }
-
-    int port = atoi(argv[3]);
-    int socketFD = socket(AF_INET, SOCK_STREAM, 0);
-    if (socketFD < 0) error("Error opening socket");
-
-    struct sockaddr_in serverAddress;
-    memset(&serverAddress, 0, sizeof(serverAddress));
+    memset((char *)&serverAddress, '\0', sizeof(serverAddress));
+    int portNumber = atoi(argv[1]);
     serverAddress.sin_family = AF_INET;
-    serverAddress.sin_port = htons(port);
+    serverAddress.sin_port = htons(portNumber);
     serverAddress.sin_addr.s_addr = inet_addr("127.0.0.1");
 
-    if (connect(socketFD, (struct sockaddr *)&serverAddress, sizeof(serverAddress)) < 0) {
-        fprintf(stderr, "Error: could not contact dec_server on port %d\n", port);
-        exit(2);
+    if (bind(listenSocketFD, (struct sockaddr *)&serverAddress, sizeof(serverAddress)) < 0)
+        error("ERROR on binding");
+
+    listen(listenSocketFD, 5);
+
+    while (1) {
+        sizeOfClientInfo = sizeof(clientAddress);
+        connectionFD = accept(listenSocketFD, (struct sockaddr *)&clientAddress, &sizeOfClientInfo);
+        if (connectionFD < 0) {
+            fprintf(stderr, "ERROR on accept\n");
+            continue;
+        }
+
+        pid_t pid = fork();
+        if (pid == 0) {
+            // In child process
+            close(listenSocketFD);
+            handle_connection(connectionFD);
+        } else {
+            // Parent
+            close(connectionFD);
+        }
     }
 
-    // Handshake
-    char buffer[16];
-    memset(buffer, 0, sizeof(buffer));
-    send(socketFD, "DEC_CLIENT", 10, 0);
-    recv(socketFD, buffer, sizeof(buffer) - 1, 0);
-    if (strcmp(buffer, "DEC_SERVER") != 0) {
-        fprintf(stderr, "Error: could not contact dec_server on port %d\n", port);
-        close(socketFD);
-        exit(2);
-    }
-
-    int textSize = strlen(ciphertext);
-    send(socketFD, &textSize, sizeof(int), 0);
-    write_all(socketFD, ciphertext, textSize);
-    write_all(socketFD, key, textSize);
-
-    if (read_all(socketFD, plaintext, textSize) < 0) {
-        fprintf(stderr, "Error receiving data: Connection reset by peer\n");
-        exit(1);
-    }
-
-    plaintext[textSize] = '\0';
-    printf("%s\n", plaintext);
-    close(socketFD);
+    close(listenSocketFD);
     return 0;
 }
