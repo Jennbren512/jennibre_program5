@@ -63,6 +63,17 @@ int main(int argc, char *argv[]) {
     // Accept client connections and handle encryption
     while (1) {
         client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len);
+
+        char client_id[BUFFER_SIZE] = {0};
+        recv(client_fd, client_id, sizeof(client_id) - 1, 0);
+
+        if (strcmp(client_id, "enc_client") != 0) {
+            char *msg = "ERROR: Unauthorized client";
+            send(client_fd, msg, strlen(msg), 0);
+            close(client_fd);
+            continue;
+        }
+    
         if (client_fd == -1) {
             perror("Accept failed");
             continue;
