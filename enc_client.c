@@ -28,6 +28,8 @@ int main(int argc, char *argv[]) {
     char plaintext[BUFFER_SIZE] = {0};
     fgets(plaintext, BUFFER_SIZE - 1, fp);
     fclose(fp);
+    size_t plaintext_len = strlen(plaintext);
+    if (plaintext[plaintext_len - 1] == '\n') plaintext[--plaintext_len] = '\0'; // Remove newline
 
     // Read key from file
     fp = fopen(key_file, "r");
@@ -38,6 +40,14 @@ int main(int argc, char *argv[]) {
     char key[BUFFER_SIZE] = {0};
     fgets(key, BUFFER_SIZE - 1, fp);
     fclose(fp);
+    size_t key_len = strlen(key);
+    if (key[key_len - 1] == '\n') key[--key_len] = '\0'; // Remove newline
+
+    // Check if key is long enough
+    if (key_len < plaintext_len) {
+        fprintf(stderr, "Error: Key is too short\n");
+        exit(1);  // Ensure we return a non-zero exit code
+    }
 
     // Create socket
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -51,7 +61,7 @@ int main(int argc, char *argv[]) {
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(port);
-    server_addr.sin_addr.s_addr = inet_addr("127.0.0.1"); // Assuming local server
+    server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
     // Connect to server
     if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
@@ -61,8 +71,8 @@ int main(int argc, char *argv[]) {
     }
 
     // Send plaintext and key to server
-    send(sockfd, plaintext, strlen(plaintext), 0);
-    send(sockfd, key, strlen(key), 0);
+    send(sockfd, plaintext, plaintext_len, 0);
+    send(sockfd, key, key_len, 0);
 
     // Receive encrypted text from server
     char ciphertext[BUFFER_SIZE] = {0};
