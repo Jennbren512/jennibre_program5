@@ -5,16 +5,9 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <signal.h>
 
 #define BUFFER_SIZE 100000
 
-void error(const char *msg) {
-    fprintf(stderr, "%s\n", msg);
-    exit(1);
-}
-
-// Decrypt function using OTP
 void decrypt(const char *ciphertext, const char *key, char *plaintext) {
     int i;
     for (i = 0; ciphertext[i] != '\0'; i++) {
@@ -26,22 +19,20 @@ void decrypt(const char *ciphertext, const char *key, char *plaintext) {
     plaintext[i] = '\0';
 }
 
-// Read exactly n bytes
-int read_all(int socketFD, char *buffer, int n) {
+int read_all(int fd, char *buffer, int n) {
     int total = 0, bytesRead;
     while (total < n) {
-        bytesRead = recv(socketFD, buffer + total, n - total, 0);
+        bytesRead = recv(fd, buffer + total, n - total, 0);
         if (bytesRead <= 0) return -1;
         total += bytesRead;
     }
     return total;
 }
 
-// Write exactly n bytes
-int write_all(int socketFD, char *buffer, int n) {
+int write_all(int fd, char *buffer, int n) {
     int total = 0, bytesWritten;
     while (total < n) {
-        bytesWritten = send(socketFD, buffer + total, n - total, 0);
+        bytesWritten = send(fd, buffer + total, n - total, 0);
         if (bytesWritten <= 0) return -1;
         total += bytesWritten;
     }
@@ -57,11 +48,9 @@ void handle_connection(int connectionFD) {
         send(connectionFD, "REJECT", 6, 0);
         close(connectionFD);
         exit(1);
-    } else {
-        send(connectionFD, "DEC_SERVER", 10, 0);
     }
+    send(connectionFD, "DEC_SERVER", 10, 0);
 
-    // Get sizes first
     int textSize;
     recv(connectionFD, &textSize, sizeof(int), 0);
 
@@ -74,13 +63,11 @@ void handle_connection(int connectionFD) {
 
     if (read_all(connectionFD, ciphertext, textSize) < 0 ||
         read_all(connectionFD, key, textSize) < 0) {
-        fprintf(stderr, "Error reading ciphertext/key\n");
         close(connectionFD);
         exit(1);
     }
 
     decrypt(ciphertext, key, plaintext);
-
     write_all(connectionFD, plaintext, textSize);
 
     free(ciphertext);
@@ -96,46 +83,40 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
-    int listenSocketFD, connectionFD;
-    socklen_t sizeOfClientInfo;
-    struct sockaddr_in serverAddress, clientAddress;
+    int listenFD, connFD;
+    struct sockaddr_in serverAddr, clientAddr;
+    socklen_t clientLen = sizeof(clientAddr);
+    int port = atoi(argv[1]);
 
-    listenSocketFD = socket(AF_INET, SOCK_STREAM, 0);
-    if (listenSocketFD < 0) error("ERROR opening socket");
-
+    listenFD = socket(AF_INET, SOCK_STREAM, 0);
     int yes = 1;
-    setsockopt(listenSocketFD, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int));
+    setsockopt(listenFD, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int));
 
-    memset((char *)&serverAddress, '\0', sizeof(serverAddress));
-    int portNumber = atoi(argv[1]);
-    serverAddress.sin_family = AF_INET;
-    serverAddress.sin_port = htons(portNumber);
-    serverAddress.sin_addr.s_addr = inet_addr("127.0.0.1");
+    memset(&serverAddr, 0, sizeof(serverAddr));
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(port);
+    serverAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
-    if (bind(listenSocketFD, (struct sockaddr *)&serverAddress, sizeof(serverAddress)) < 0)
-        error("ERROR on binding");
+    if (bind(listenFD, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
+        perror("bind");
+        exit(1);
+    }
 
-    listen(listenSocketFD, 5);
+    listen(listenFD, 5);
 
     while (1) {
-        sizeOfClientInfo = sizeof(clientAddress);
-        connectionFD = accept(listenSocketFD, (struct sockaddr *)&clientAddress, &sizeOfClientInfo);
-        if (connectionFD < 0) {
-            fprintf(stderr, "ERROR on accept\n");
-            continue;
-        }
+        connFD = accept(listenFD, (struct sockaddr *)&clientAddr, &clientLen);
+        if (connFD < 0) continue;
 
         pid_t pid = fork();
         if (pid == 0) {
-            // In child process
-            close(listenSocketFD);
-            handle_connection(connectionFD);
+            close(listenFD);
+            handle_connection(connFD);
         } else {
-            // Parent
-            close(connectionFD);
+            close(connFD);
         }
     }
 
-    close(listenSocketFD);
+    close(listenFD);
     return 0;
 }
