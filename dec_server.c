@@ -5,8 +5,15 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <signal.h>
 
 #define BUFFER_SIZE 100000
+#define CHUNK_SIZE 1000
+
+void error(const char *msg) {
+    fprintf(stderr, "%s\n", msg);
+    exit(1);
+}
 
 void decrypt(const char *ciphertext, const char *key, char *plaintext) {
     int i;
@@ -19,20 +26,21 @@ void decrypt(const char *ciphertext, const char *key, char *plaintext) {
     plaintext[i] = '\0';
 }
 
-int read_all(int fd, char *buffer, int n) {
+int read_all(int socketFD, char *buffer, int n) {
     int total = 0, bytesRead;
     while (total < n) {
-        bytesRead = recv(fd, buffer + total, n - total, 0);
+        bytesRead = recv(socketFD, buffer + total, n - total, 0);
         if (bytesRead <= 0) return -1;
         total += bytesRead;
     }
     return total;
 }
 
-int write_all(int fd, char *buffer, int n) {
+int write_all(int socketFD, char *buffer, int n) {
     int total = 0, bytesWritten;
     while (total < n) {
-        bytesWritten = send(fd, buffer + total, n - total, 0);
+        int chunk = (n - total > CHUNK_SIZE) ? CHUNK_SIZE : (n - total);
+        bytesWritten = send(socketFD, buffer + total, chunk, 0);
         if (bytesWritten <= 0) return -1;
         total += bytesWritten;
     }
@@ -48,8 +56,9 @@ void handle_connection(int connectionFD) {
         send(connectionFD, "REJECT", 6, 0);
         close(connectionFD);
         exit(1);
+    } else {
+        send(connectionFD, "DEC_SERVER", 10, 0);
     }
-    send(connectionFD, "DEC_SERVER", 10, 0);
 
     int textSize;
     recv(connectionFD, &textSize, sizeof(int), 0);
@@ -63,6 +72,7 @@ void handle_connection(int connectionFD) {
 
     if (read_all(connectionFD, ciphertext, textSize) < 0 ||
         read_all(connectionFD, key, textSize) < 0) {
+        fprintf(stderr, "Error reading ciphertext/key\n");
         close(connectionFD);
         exit(1);
     }
@@ -83,40 +93,52 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
-    int listenFD, connFD;
-    struct sockaddr_in serverAddr, clientAddr;
-    socklen_t clientLen = sizeof(clientAddr);
-    int port = atoi(argv[1]);
+    int listenSocketFD, connectionFD;
+    socklen_t sizeOfClientInfo;
+    struct sockaddr_in serverAddress, clientAddress;
 
-    listenFD = socket(AF_INET, SOCK_STREAM, 0);
+    listenSocketFD = socket(AF_INET, SOCK_STREAM, 0);
+    if (listenSocketFD < 0) error("ERROR opening socket");
+
     int yes = 1;
-    setsockopt(listenFD, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int));
-
-    memset(&serverAddr, 0, sizeof(serverAddr));
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port = htons(port);
-    serverAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
-
-    if (bind(listenFD, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
-        perror("bind");
-        exit(1);
+    if (setsockopt(listenSocketFD, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) < 0) {
+        error("ERROR setting socket options");
     }
 
-    listen(listenFD, 5);
+    memset((char *)&serverAddress, '\0', sizeof(serverAddress));
+    int portNumber = atoi(argv[1]);
+    serverAddress.sin_family = AF_INET;
+    serverAddress.sin_port = htons(portNumber);
+    serverAddress.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+    if (bind(listenSocketFD, (struct sockaddr *)&serverAddress, sizeof(serverAddress)) < 0)
+        error("ERROR on binding");
+
+    if (listen(listenSocketFD, 5) < 0)
+        error("ERROR on listen");
+
+    fprintf(stderr, "dec_server started on port %d\n", portNumber);
 
     while (1) {
-        connFD = accept(listenFD, (struct sockaddr *)&clientAddr, &clientLen);
-        if (connFD < 0) continue;
+        sizeOfClientInfo = sizeof(clientAddress);
+        connectionFD = accept(listenSocketFD, (struct sockaddr *)&clientAddress, &sizeOfClientInfo);
+        if (connectionFD < 0) {
+            fprintf(stderr, "ERROR on accept\n");
+            continue;
+        }
 
         pid_t pid = fork();
         if (pid == 0) {
-            close(listenFD);
-            handle_connection(connFD);
+            close(listenSocketFD);
+            handle_connection(connectionFD);
+        } else if (pid > 0) {
+            close(connectionFD);
         } else {
-            close(connFD);
+            fprintf(stderr, "ERROR on fork\n");
+            close(connectionFD);
         }
     }
 
-    close(listenFD);
+    close(listenSocketFD);
     return 0;
 }

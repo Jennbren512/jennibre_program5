@@ -8,6 +8,7 @@
 #include <arpa/inet.h>
 
 #define BUFFER_SIZE 100000
+#define CHUNK_SIZE 1000
 
 void error(const char *msg) {
     fprintf(stderr, "%s\n", msg);
@@ -20,7 +21,7 @@ int read_file(const char *filename, char *buffer) {
     fgets(buffer, BUFFER_SIZE, fp);
     fclose(fp);
     size_t len = strlen(buffer);
-    if (len > 0 && buffer[len - 1] == '\n') buffer[len - 1] = '\0'; // strip newline
+    if (len > 0 && buffer[len - 1] == '\n') buffer[len - 1] = '\0'; // Strip newline
     return 0;
 }
 
@@ -44,7 +45,8 @@ int read_all(int fd, char *buffer, int n) {
 int write_all(int fd, char *buffer, int n) {
     int total = 0, bytesWritten;
     while (total < n) {
-        bytesWritten = send(fd, buffer + total, n - total, 0);
+        int chunk = (n - total > CHUNK_SIZE) ? CHUNK_SIZE : (n - total);
+        bytesWritten = send(fd, buffer + total, chunk, 0);
         if (bytesWritten <= 0) return -1;
         total += bytesWritten;
     }

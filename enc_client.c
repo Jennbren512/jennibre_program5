@@ -2,98 +2,118 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-#define BUFFER_SIZE 1024
+#define BUFFER_SIZE 100000
+#define CHUNK_SIZE 1000
+
+void error(const char *msg) {
+    fprintf(stderr, "%s\n", msg);
+    exit(1);
+}
+
+int read_file(const char *filename, char *buffer) {
+    FILE *fp = fopen(filename, "r");
+    if (!fp) return -1;
+    fgets(buffer, BUFFER_SIZE, fp);
+    fclose(fp);
+    size_t len = strlen(buffer);
+    if (len > 0 && buffer[len - 1] == '\n') buffer[len - 1] = '\0';
+    return 0;
+}
+
+int validate(const char *text) {
+    for (int i = 0; text[i]; i++) {
+        if ((text[i] < 'A' || text[i] > 'Z') && text[i] != ' ') return 0;
+    }
+    return 1;
+}
+
+int read_all(int fd, char *buffer, int n) {
+    int total = 0, bytesRead;
+    while (total < n) {
+        bytesRead = recv(fd, buffer + total, n - total, 0);
+        if (bytesRead <= 0) return -1;
+        total += bytesRead;
+    }
+    return total;
+}
+
+int write_all(int fd, char *buffer, int n) {
+    int total = 0, bytesWritten;
+    while (total < n) {
+        int chunk = (n - total > CHUNK_SIZE) ? CHUNK_SIZE : (n - total);
+        bytesWritten = send(fd, buffer + total, chunk, 0);
+        if (bytesWritten <= 0) return -1;
+        total += bytesWritten;
+    }
+    return total;
+}
 
 int main(int argc, char *argv[]) {
     if (argc != 4) {
-        fprintf(stderr, "Usage: %s <plaintext_file> <key_file> <port>\n", argv[0]);
+        fprintf(stderr, "USAGE: %s plaintext key port\n", argv[0]);
         exit(1);
     }
 
-    // Read command-line arguments
-    char *plaintext_file = argv[1];
-    char *key_file = argv[2];
-    int port = atoi(argv[3]);
+    char plaintext[BUFFER_SIZE], key[BUFFER_SIZE], ciphertext[BUFFER_SIZE];
+    memset(plaintext, 0, sizeof(plaintext));
+    memset(key, 0, sizeof(key));
+    memset(ciphertext, 0, sizeof(ciphertext));
 
-    // Read plaintext from file
-    FILE *fp = fopen(plaintext_file, "r");
-    if (!fp) {
-        perror("Error opening plaintext file");
-        exit(1);
-    }
-    char plaintext[BUFFER_SIZE] = {0};
-    fgets(plaintext, BUFFER_SIZE - 1, fp);
-    fclose(fp);
-    size_t plaintext_len = strlen(plaintext);
-    if (plaintext[plaintext_len - 1] == '\n') plaintext[--plaintext_len] = '\0'; // Remove newline
-
-    // Read key from file
-    fp = fopen(key_file, "r");
-    if (!fp) {
-        perror("Error opening key file");
-        exit(1);
-    }
-    char key[BUFFER_SIZE] = {0};
-    fgets(key, BUFFER_SIZE - 1, fp);
-    fclose(fp);
-    size_t key_len = strlen(key);
-    if (key[key_len - 1] == '\n') key[--key_len] = '\0'; // Remove newline
-
-    // Check if key is long enough
-    if (key_len < plaintext_len) {
-        fprintf(stderr, "Error: Key is too short\n");
+    if (read_file(argv[1], plaintext) < 0 || read_file(argv[2], key) < 0) {
+        fprintf(stderr, "Error reading input files\n");
         exit(1);
     }
 
-    // Create socket
-    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd == -1) {
-        perror("Socket creation failed");
+    if (!validate(plaintext) || !validate(key)) {
+        fprintf(stderr, "enc_client error: input contains bad characters\n");
         exit(1);
     }
 
-    // Set up server address
-    struct sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(port);
-    server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
-
-    // Connect to server
-    if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
-        perror("Connection failed");
-        close(sockfd);
+    if (strlen(key) < strlen(plaintext)) {
+        fprintf(stderr, "Error: key '%s' is too short\n", argv[2]);
         exit(1);
     }
 
-    // Send plaintext and key to server
-    send(sockfd, plaintext, plaintext_len, 0);
-    send(sockfd, key, key_len, 0);
+    int socketFD = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in serverAddr;
+    memset(&serverAddr, 0, sizeof(serverAddr));
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(atoi(argv[3]));
+    serverAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
-    // Receive encrypted text from server
-    char ciphertext[BUFFER_SIZE] = {0};
-    size_t received = 0;
-    while (received < plaintext_len) {
-        ssize_t bytes = recv(sockfd, ciphertext + received, plaintext_len - received, 0);
-        if (bytes <= 0) {
-            perror("Error receiving data");
-            close(sockfd);
-            exit(1);
-        }
-        received += bytes;
+    if (connect(socketFD, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
+        fprintf(stderr, "Error: could not contact enc_server on port %s\n", argv[3]);
+        exit(2);
     }
 
-    // Ensure proper null-termination
-    ciphertext[plaintext_len] = '\0';
+    // Handshake
+    char buffer[16] = {0};
+    send(socketFD, "ENC_CLIENT", 10, 0);
+    recv(socketFD, buffer, sizeof(buffer) - 1, 0);
+    if (strcmp(buffer, "ENC_SERVER") != 0) {
+        fprintf(stderr, "Error: could not contact enc_server on port %s\n", argv[3]);
+        close(socketFD);
+        exit(2);
+    }
 
-    // Print only the expected number of characters
+    int textSize = strlen(plaintext);
+    send(socketFD, &textSize, sizeof(int), 0);
+    write_all(socketFD, plaintext, textSize);
+    write_all(socketFD, key, textSize);
+
+    if (read_all(socketFD, ciphertext, textSize) < 0) {
+        fprintf(stderr, "Error receiving data from server\n");
+        exit(1);
+    }
+
+    ciphertext[textSize] = '\0';
     printf("%s\n", ciphertext);
 
-    // Clean up
-    close(sockfd);
+    close(socketFD);
     return 0;
 }
