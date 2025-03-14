@@ -4,10 +4,10 @@
 
 #define ALPHABET_SIZE 27
 
-// Function to generate random key
+// Generates random key
 char generate_random_char() {
     int random_index = rand() % ALPHABET_SIZE;
-    if (random_index == 26) return ' '; // Space character
+    if (random_index == 26) return ' '; // adds space
     return 'A' + random_index;
 }
 
@@ -23,10 +23,10 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
-    // Initialize random number generator
+    // Initialize number generator
     srand(time(NULL));
 
-    // Generate and print the random key
+    // Generate and print key
     for (int i = 0; i < key_length; i++) {
         printf("%c", generate_random_char());
     }
