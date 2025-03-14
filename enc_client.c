@@ -46,7 +46,7 @@ int main(int argc, char *argv[]) {
     // Check if key is long enough
     if (key_len < plaintext_len) {
         fprintf(stderr, "Error: Key is too short\n");
-        exit(1);  // Ensure we return a non-zero exit code
+        exit(1);
     }
 
     // Create socket
@@ -76,9 +76,21 @@ int main(int argc, char *argv[]) {
 
     // Receive encrypted text from server
     char ciphertext[BUFFER_SIZE] = {0};
-    recv(sockfd, ciphertext, BUFFER_SIZE - 1, 0);
+    size_t received = 0;
+    while (received < plaintext_len) {
+        ssize_t bytes = recv(sockfd, ciphertext + received, plaintext_len - received, 0);
+        if (bytes <= 0) {
+            perror("Error receiving data");
+            close(sockfd);
+            exit(1);
+        }
+        received += bytes;
+    }
 
-    // Print encrypted text
+    // Ensure proper null-termination
+    ciphertext[plaintext_len] = '\0';
+
+    // Print only the expected number of characters
     printf("%s\n", ciphertext);
 
     // Clean up
